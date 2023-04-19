@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const jwt = require("jsonwebtoken");
 const User = require("../model/User.model");
+const blacklist = [];
 
 router.get("/", (req, res) => res.send("Hello World"));
 
@@ -15,27 +16,26 @@ router.post("/register", async (req, res) => {
 
 router.post("/login", async (req, res) => {
   const { email, password } = req.body;
-  const user = await User.findOne({ email, password });
-  if (user) {
-    if (email === user.email && password === user.password) {
-      const token = jwt.sign({ id: user._id, name: user.name }, "SECRET", {
-        expiresIn: "7 days",
-      }); //payload(id,name) and signature(SECRET)(which wiil be used by server to generate token)
-      const refreshToken = jwt.sign(
-        { id: user._id, name: user.name },
-        "REFRESHSECRET",
-        {
+  try {
+    const user = await User.findOne({ email, password });
+    if (user) {
+      if (email === user.email && password === user.password) {
+        const token = jwt.sign({ id: user._id, name: user.name }, "SECRET", {
+          expiresIn: "7 days",
+        }); //payload(id,name) and signature(SECRET)(which wiil be used by server to generate token)
+        const refreshToken = jwt.sign({ id: user._id }, "REFRESHSECRET", {
           expiresIn: "28 days",
-        }
-      );
-      return res.send({
-        msg: "Login success",
-        token: token,
-        refreshToken: refreshToken,
-      });
+        });
+        return res.send({
+          msg: "Login success",
+          token: token,
+          refreshToken: refreshToken,
+        });
+      }
     }
+  } catch (error) {
+    return res.status(401).send("Invalid credentails");
   }
-  return res.status(401).send("Invalid credentails");
 });
 
 router.get("/:id", async (req, res) => {
@@ -44,6 +44,9 @@ router.get("/:id", async (req, res) => {
   if (!token) {
     return res.send("Unauthorization");
   }
+  if (blacklist.includes(token)) {
+    return res.send("token already expired");
+  }
   try {
     const verification = jwt.verify(token, "SECRET");
     if (verification) {
@@ -51,12 +54,15 @@ router.get("/:id", async (req, res) => {
       return res.send(user);
     }
   } catch (error) {
+    if (error.message === "jwt expired") {
+      blacklist.push(token);
+    }
     return res.send("Invalid token");
   }
 });
 
 //refresh Token
-router.post("/refresh", (req, res) => {
+router.post("/refresh", async (req, res) => {
   const refreshToken = req.headers["authorization"];
   if (!refreshToken) {
     return res.status(401).send("unauthorized");
@@ -64,17 +70,24 @@ router.post("/refresh", (req, res) => {
   try {
     const verification = jwt.verify(refreshToken, "REFRESHSECRET");
     if (verification) {
-      const newToken = jwt.sign(
-        { id: verification.id, name: verification.name },
-        "SECRET",
-        { expiresIn: "7 days" }
-      );
+      const userData = await User.findOne({ _id: verification.id });
+      const newToken = jwt.sign({ ...userData }, "SECRET", {
+        expiresIn: "7 days",
+      });
       return res.send({ token: newToken });
     }
   } catch (error) {
     //refresh token is expired, redirect user to login page
     console.log(error.message);
+    return res.send("refresh token is expired login again");
   }
+});
+
+//logout
+router.post("/logout", (req, res) => {
+  const token = req.headers["authorization"];
+  blacklist.push(token);
+  return res.send("User logged out successfully");
 });
 
 module.exports = router;
